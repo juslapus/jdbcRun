@@ -5,10 +5,13 @@ import java.text.DecimalFormat;
 import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.List;
+import java.util.Properties;
 import java.util.Random;
-import java.util.function.BooleanSupplier;
+
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.JSchException;
+import com.jcraft.jsch.Session;
 
 /**
  * Created by Justin on 6/7/16.
@@ -16,11 +19,15 @@ import java.util.function.BooleanSupplier;
 public class jdbcrun {
     // JDBC driver name and database URL
     private final String JDBC_DRIVER = "com.mysql.jdbc.Driver";
-    private final String DB_URL = "jdbc:mysql://localhost:3306/crossbird?useUnicode=true&characterEncoding=UTF-8";
+//    private final String DB_URL = "jdbc:mysql://localhost:3306/crossbird?useUnicode=true&characterEncoding=UTF-8";
+    private final String DB_URL = "jdbc:mysql://everforth-master-stg-for-test.c9ya5wr2jjd8.ap-northeast-1.rds.amazonaws.com:3306/crossbird?useUnicode=true&characterEncoding=UTF-8";
+
 
     //  Database credentials
-    private final String USER = "root";
-    private final String PASS = "";
+//    private final String USER = "root";
+//    private final String PASS = "";
+    private final String USER = "engine_user";
+    private final String PASS = "ULuQQZC09bhtlFJKVSQXmdttb25whC8p";
 
     // Headers
     private String mTableName = "";
@@ -47,8 +54,7 @@ public class jdbcrun {
     private final boolean PRINT_DEBUG_SQLQUERY = false;
 
     private final int TIMES_TO_TEST = 100;
-    private final int NUMBER_OF_ENTRIES_TO_POPULATE = 3000000;
-
+//    private final int NUMBER_OF_ENTRIES_TO_POPULATE = 3000000;
     private double mLowestAverage = 1;
     private String mWinningQuery = "";
     private String mCurrentQuery = "";
@@ -59,37 +65,191 @@ public class jdbcrun {
 
     private List<String> mTestList;
 
+    private static void doSshTunnel(String strSshUser, String strSshPassword, String strSshHost, int nSshPort,
+                                    String strRemoteHost, int nLocalPort, int nRemotePort, String SshKeyFilepath) throws JSchException {
+        final JSch jsch = new JSch();
+        Session session = jsch.getSession(strSshUser, strSshHost, 22);
+        session.setPassword(strSshPassword);
+
+        jsch.addIdentity(SshKeyFilepath);
+        final Properties config = new Properties();
+        config.put("StrictHostKeyChecking", "no");
+        session.setConfig(config);
+
+        session.connect();
+        session.setPortForwardingL(nLocalPort, strRemoteHost, nRemotePort);
+    }
+
     public static void main(String[] args) {
         jdbcrun program = new jdbcrun();
         program.start();
     }
 
-    private void start(){
-        mTestList = new ArrayList<>();
+    public void start() {
 
-        if (COMMAND_RUN_OLD_QUERY && COMMAND_RUN_QUERY_TEST) {
-            mTableName = "blog_v2";
-        } else {
-            mTableName = "index_article_mine";
+        try {
+            String strSshUser = "justin"; // SSH loging username
+            String strSshPassword = ""; // SSH login password
+            String strSshHost = "52.192.90.183"; // hostname or ip or
+            // SSH server
+            int nSshPort = 22; // remote SSH host port number
+            String strRemoteHost = "everforth-master-stg-for-test.c9ya5wr2jjd8.ap-northeast-1.rds.amazonaws.com"; // hostname or
+            String SshKeyFilepath = "/Users/Justin/.ssh/id_rsa";
+
+            // ip of
+            // your
+            // database
+            // server
+            int nLocalPort = 3366; // local port number use to bind SSH tunnel
+            int nRemotePort = 3306; // remote port number of your database
+            String strDbUser = "engine_user"; // database loging username
+            String strDbPassword = "ULuQQZC09bhtlFJKVSQXmdttb25whC8p"; // database login password
+
+            jdbcrun.doSshTunnel(strSshUser, strSshPassword, strSshHost, nSshPort, strRemoteHost, nLocalPort,
+                    nRemotePort, SshKeyFilepath);
+
+            Class.forName("com.mysql.jdbc.Driver");
+            Connection con = DriverManager.getConnection("jdbc:mysql://localhost:" + nLocalPort + "/crossbird", strDbUser,
+                    strDbPassword);
+
+            System.out.println("Creating statement...");
+            Statement stmt = null;
+            stmt = con.createStatement();
+            String sql;
+            sql = sqlPopulateIndexArticle();
+            stmt.executeUpdate(sql);
+
+            //STEP 6: Clean-up environment
+            stmt.close();
+            con.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            System.exit(0);
         }
+    }
 
-        if (COMMAND_POPULATE_TEST_DATA)
-//            for (int i = 0; i < NUMBER_OF_ENTRIES_TO_POPULATE; i++) {
-                populateTestData();
+    private String sqlPopulateIndexArticle() {
+        String sql;
+        sql = "INSERT INTO index_article_mine\n" +
+                "SELECT\n" +
+                "a.id as resource_id, 'system-system-0-class-article' as resource_kind, assoc.kind_id as association_kind_id, assoc.right_id as assocation_target_id, null as appid, a.company_id, a.brand_id, a.shop_id, a.publish_at, a.created_at, a.updated_at, a.public_at, a.close_at, a.start_at, a.end_at, null, null, null, null\n" +
+                "FROM\n" +
+                " crossbird.article_v2 a\n" +
+                "LEFT JOIN crossbird.association_v2 assoc\n" +
+                "ON a.id = assoc.left_id\n" +
+                "WHERE\n" +
+                "  a.freezed <> 2 \n" +
+                "  AND assoc.freezed = 0\n" +
+                "--   and '2016-04-27 03:59:27' between coalesce(a.public_at,'2016-04-27 03:59:27') and coalesce(a.close_at,'2016-04-27 03:59:27')\n" +
+                "  and a.id in (\n" +
+                "    Select\n" +
+                "      assoc.left_id as assoc_left_id\n" +
+                "     From\n" +
+                "      association_v2 assoc\n" +
+                "     Where\n" +
+                "      assoc.freezed = 0\n" +
+                "      and assoc.left_id = a.id\n" +
+                "      and assoc.right_id in (\n" +
+                "        Select\n" +
+                "\t      t.id as tag_id\n" +
+                "        From\n" +
+                "          crossbird.tag_v2 t\n" +
+                "\t\tWhere\n" +
+                "        t.freezed = 0\n" +
+                "        and t.id = assoc.right_id\n" +
+                "        )\n" +
+                "  )\n" +
+                "LIMIT 10\n" +
+                ";";
+
+        return sql;
+    }
+
+//    public static void main(String[] args) {
+//        jdbcrun program = new jdbcrun();
+//        program.start();
+//    }
+
+//    private void start(){
+//        mTestList = new ArrayList<>();
+//
+//        testDB();
+
+//        if (COMMAND_RUN_OLD_QUERY && COMMAND_RUN_QUERY_TEST) {
+//            mTableName = "blog_v2";
+//        } else {
+//            mTableName = "index_article_mine";
+//        }
+//
+//        if (COMMAND_POPULATE_TEST_DATA)
+//                populateTestData();
+//
+//        if (COMMAND_RUN_QUERY_TEST || COMMAND_RUN_EXPLAIN_QUERY_TEST) {
+//            if (COMMAND_RUN_OLD_QUERY) {
+//                for (int i = 0; i < TIMES_TO_TEST; i++) {
+//                    runSelectQueryTest();
+//                }
+//            } else {
+//                runIndexTest(generateIndices(), 0);
+//                printFinalReport();
 //            }
+//        }
+//
+//        if (COMMAND_RUN_BATCH_INSERT) { batchInsert(); }
+//    }
 
-        if (COMMAND_RUN_QUERY_TEST || COMMAND_RUN_EXPLAIN_QUERY_TEST) {
-            if (COMMAND_RUN_OLD_QUERY) {
-                for (int i = 0; i < TIMES_TO_TEST; i++) {
-                    runSelectQueryTest();
-                }
-            } else {
-                runIndexTest(generateIndices(), 0);
-                printFinalReport();
+    private void testDB() {
+        Connection conn = null;
+        Statement stmt = null;
+        try{
+            //STEP 2: Register JDBC driver
+            Class.forName("com.mysql.jdbc.Driver");
+
+            //STEP 3: Open a connection
+            System.out.println("Connecting to database...");
+            conn = DriverManager.getConnection(DB_URL,USER,PASS);
+
+            //STEP 4: Execute a query
+            System.out.println("Creating statement...");
+            stmt = conn.createStatement();
+            String sql;
+            sql = "SELECT id FROM blog_v2";
+            ResultSet rs = stmt.executeQuery(sql);
+
+            //STEP 5: Extract data from result set
+            while(rs.next()){
+                //Retrieve by column name
+                int id  = rs.getInt("id");
+
+                //Display values
+                System.out.print("ID: " + id);
             }
-        }
-
-        if (COMMAND_RUN_BATCH_INSERT) { batchInsert(); }
+            //STEP 6: Clean-up environment
+            rs.close();
+            stmt.close();
+            conn.close();
+        }catch(SQLException se){
+            //Handle errors for JDBC
+            se.printStackTrace();
+        }catch(Exception e){
+            //Handle errors for Class.forName
+            e.printStackTrace();
+        }finally{
+            //finally block used to close resources
+            try{
+                if(stmt!=null)
+                    stmt.close();
+            }catch(SQLException se2){
+            }// nothing we can do
+            try{
+                if(conn!=null)
+                    conn.close();
+            }catch(SQLException se){
+                se.printStackTrace();
+            }//end finally try
+        }//end try
+        System.out.println("Goodbye!");
     }
 
     private void populateTestData () {
@@ -164,7 +324,7 @@ public class jdbcrun {
             String sql;
             sql = "INSERT INTO index_article_mine\n" +
                     "SELECT\n" +
-                    "b.id as resource_id, assoc.class_id as resource_kind, assoc.kind_id as association_kind_id, assoc.right_id as assocation_target_id, b.context_appid as appid, b.company_id, b.brand_id, b.shop_id, b.publish_at, b.created_at, b.updated_at, b.public_at, b.close_at, b.start_at, b.end_at, null, null, null, null\n" +
+                    "b.id as resource_id, 'system-system-0-class-blog' as resource_kind, assoc.kind_id as association_kind_id, assoc.right_id as assocation_target_id, null as appid, b.company_id, b.brand_id, b.shop_id, b.publish_at, b.created_at, b.updated_at, b.public_at, b.close_at, b.start_at, b.end_at, null, null, null, null\n" +
                     "FROM\n" +
                     " crossbird.blog_v2 b\n" +
                     "LEFT JOIN crossbird.association_v2 assoc\n" +
